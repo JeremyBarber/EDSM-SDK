@@ -1,0 +1,35 @@
+name: Merge Request
+
+on:
+  pull_request:
+    branches: [ "develop", "main" ]
+    
+env:
+  DOTNET_NOLOGO: true                     # Disable the .NET logo
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true # Disable the .NET first time experience
+  DOTNET_CLI_TELEMETRY_OPTOUT: true       # Disable sending .NET CLI telemetry
+
+jobs:
+  windows-ui-build:
+    runs-on: windows-2022
+    name: Windows UI Build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup .NET 6
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: 6.0.x
+          include-prerelease: true
+
+      - name: Install MAUI Workloads
+        run: |
+          dotnet workload install maui --ignore-failed-sources
+
+      - name: Restore Dependencies
+        run: dotnet restore src/EDSMTriangulation.sln        
+        
+        # Currently a bug in MAUI building means that using --no-restore and --no-build can cause build failures
+      - name: Build MAUI Windows
+        run: dotnet build -c Release -f net6.0-windows10.0.19041.0 .\src\EDSMTriangulation.sln

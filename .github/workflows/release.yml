@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+    
+env:
+  DOTNET_NOLOGO: true                     # Disable the .NET logo
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true # Disable the .NET first time experience
+  DOTNET_CLI_TELEMETRY_OPTOUT: true       # Disable sending .NET CLI telemetry
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  construct-version:
+    runs-on: ubuntu-latest
+    name: Construct version
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          ref: 'main'
+          fetch-depth: 0
+          
+      - name: Calculate version string
+        id: version
+        uses: paulhatch/semantic-version@v4.0.2
+        with:
+          tag_prefix: "v"
+          major_pattern: "(MAJOR)"
+          minor_pattern: "(MINOR)"
+          format: "${major}.${minor}.${patch}.${increment}"
+          bump_each_commit: false
+
+  update-changelog:
+    runs-on: ubuntu-latest
+    needs: construct-version
+    name: Update Changelog
+    outputs:
+      changelog-statement: ${{ steps.changelog.outputs.changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          ref: 'main'
+          token: ${{ secrets.PAT }}
+
+      - name: Get CHANGELOG Entry
+        uses: mindsers/changelog-reader-action@v2
+        id: changelog
+        with:
+          version: Unreleased
+          validation_level: warn
+          path: ./CHANGELOG.md
+
+      - name: Update CHANGELOG
+        uses: thomaseizinger/keep-a-changelog-new-release@v1
+        with:
+          version: ${{ needs.construct-version.outputs.version }}
+
+      - name: Commit updated CHANGELOG
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          branch: main
+          commit_message: '[Automated] Update CHANGELOG'
+          file_pattern: CHANGELOG.md
+          
+  windows-ui-build:
+    runs-on: windows-2022
+    needs: [construct-version, update-changelog]
+    name: Windows UI Build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          ref: 'main'
+          fetch-depth: 0
+
+      - name: Setup .NET 6
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: 6.0.x
+          include-prerelease: true
+
+      - name: Install MAUI Workloads
+        run: |
+          dotnet workload install maui --ignore-failed-sources
+
+      - name: Restore Dependencies
+        run: dotnet restore src/EDSMTriangulation.sln
+
+      - name: Add Signing Certificate To Store
+        shell: pwsh
+        run: |
+          $password = ConvertTo-SecureString -String JeremyBarberCertificatePassword -Force -AsPlainText
+          $pfx_cert_byte = [System.Convert]::FromBase64String("${{ secrets.PUBLISHING_BASE64 }}")
+          $currentDirectory = Get-Location
+          $certificatePath = Join-Path -Path $currentDirectory -ChildPath "MyCertificate.pfx"
+          [IO.File]::WriteAllBytes("$certificatePath", $pfx_cert_byte)
+          Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password           
+        
+        # Currently a bug in MAUI building means that using --no-restore and --no-build can cause build failures
+      - name: Build MAUI Windows
+        run: dotnet build -c Release -f net6.0-windows10.0.19041.0 /p:ApplicationDisplayVersion=${{needs.construct-version.outputs.version}} .\src\EDSMTriangulation.sln
+        
+      - name: Publish MAUI Windows
+        run: dotnet publish -c Release -f net6.0-windows10.0.19041.0 /p:ApplicationDisplayVersion=${{needs.construct-version.outputs.version}} /p:PackageCertificateThumbprint=${{secrets.PUBLISHING_THUMBPRINT}} .\src\EDSMTriangulation.sln
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v2.3.1
+        with:
+          name: windows-ui
+          path: src/EdsmTriangulationInterface/bin/Release/net6.0-windows*/**/EdsmTriangulationInterface*.msix
+  
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: [construct-version, update-changelog, windows-ui-build]
+    name: Publish Release
+    steps:
+      - name: Download All Artifacts
+        id: download
+        uses: actions/download-artifact@v3
+
+      - name: Construct Release
+        uses: actions/create-release@v1
+        id: create-release
+        with:
+          release_name: v${{ needs.construct-version.outputs.version }}
+          tag_name: v${{ needs.construct-version.outputs.version }}
+          body: ${{ needs.construct-version.outputs.changelog-statement }}
+          
+      - name: Upload Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create-release.outputs.upload_url }}
+          asset_path: ${{steps.download.outputs.download-path}}/windows-ui/net6.0-windows10.0.19041.0/win10-x64/AppPackages/EdsmTriangulationInterface_${{needs.construct-version.outputs.version}}_Test/EdsmTriangulationInterface_${{needs.construct-version.outputs.version}}_x64.msix
+          asset_name: EdsmTriangulation_Windows_${{needs.construct-version.outputs.version}}_x64.msix
+          asset_content_type: application/zip
