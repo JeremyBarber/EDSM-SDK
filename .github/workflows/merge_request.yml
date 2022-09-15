@@ -2,7 +2,7 @@ name: Merge Request
 
 on:
   pull_request:
-    branches: [ "develop", "main" ]
+    branches: [ "main" ]
     
 env:
   DOTNET_NOLOGO: true                     # Disable the .NET logo
@@ -23,13 +23,8 @@ jobs:
           dotnet-version: 6.0.x
           include-prerelease: true
 
-      - name: Install MAUI Workloads
-        run: |
-          dotnet workload install maui --ignore-failed-sources
-
       - name: Restore Dependencies
-        run: dotnet restore src/EDSMTriangulation.sln        
+        run: dotnet restore src/Edsm.Sdk.sln        
         
-        # Currently a bug in MAUI building means that using --no-restore and --no-build can cause build failures
-      - name: Build MAUI Windows
-        run: dotnet build -c Release -f net6.0-windows10.0.19041.0 .\src\EDSMTriangulation.sln
+      - name: Run Tests
+        run: dotnet test .\src\Edsm.Sdk.sln

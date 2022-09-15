@@ -69,10 +69,10 @@ jobs:
           commit_message: '[Automated] Update CHANGELOG'
           file_pattern: CHANGELOG.md
           
-  windows-ui-build:
+  package-build:
     runs-on: windows-2022
     needs: [construct-version, update-changelog]
-    name: Windows UI Build
+    name: Nuget Build
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -86,39 +86,21 @@ jobs:
           dotnet-version: 6.0.x
           include-prerelease: true
 
-      - name: Install MAUI Workloads
-        run: |
-          dotnet workload install maui --ignore-failed-sources
-
       - name: Restore Dependencies
-        run: dotnet restore src/EDSMTriangulation.sln
+        run: dotnet restore src/Edsm.Sdk.sln
 
-      - name: Add Signing Certificate To Store
-        shell: pwsh
-        run: |
-          $password = ConvertTo-SecureString -String JeremyBarberCertificatePassword -Force -AsPlainText
-          $pfx_cert_byte = [System.Convert]::FromBase64String("${{ secrets.PUBLISHING_BASE64 }}")
-          $currentDirectory = Get-Location
-          $certificatePath = Join-Path -Path $currentDirectory -ChildPath "MyCertificate.pfx"
-          [IO.File]::WriteAllBytes("$certificatePath", $pfx_cert_byte)
-          Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password           
-        
-        # Currently a bug in MAUI building means that using --no-restore and --no-build can cause build failures
-      - name: Build MAUI Windows
-        run: dotnet build -c Release -f net6.0-windows10.0.19041.0 /p:ApplicationDisplayVersion=${{needs.construct-version.outputs.version}} .\src\EDSMTriangulation.sln
-        
-      - name: Publish MAUI Windows
-        run: dotnet publish -c Release -f net6.0-windows10.0.19041.0 /p:ApplicationDisplayVersion=${{needs.construct-version.outputs.version}} /p:PackageCertificateThumbprint=${{secrets.PUBLISHING_THUMBPRINT}} .\src\EDSMTriangulation.sln
+      - name: Build And Pack
+        run: dotnet build --no-restore -c Release /p:Version=${{needs.construct-version.outputs.version}} .\src\EDSMTriangulation.sln
 
-      - name: Upload Windows Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v2.3.1
         with:
-          name: windows-ui
-          path: src/EdsmTriangulationInterface/bin/Release/net6.0-windows*/**/EdsmTriangulationInterface*.msix
+          name: nuget-package
+          path: src/EdsmTriangulationInterface/bin/Release/net6.0/Edsm.Sdk${{needs.construct-version.outputs.version}}.nupkg
   
   publish-release:
     runs-on: ubuntu-latest
-    needs: [construct-version, update-changelog, windows-ui-build]
+    needs: [construct-version, update-changelog, package-build]
     name: Publish Release
     steps:
       - name: Download All Artifacts
@@ -137,6 +119,17 @@ jobs:
         uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create-release.outputs.upload_url }}
-          asset_path: ${{steps.download.outputs.download-path}}/windows-ui/net6.0-windows10.0.19041.0/win10-x64/AppPackages/EdsmTriangulationInterface_${{needs.construct-version.outputs.version}}_Test/EdsmTriangulationInterface_${{needs.construct-version.outputs.version}}_x64.msix
-          asset_name: EdsmTriangulation_Windows_${{needs.construct-version.outputs.version}}_x64.msix
+          asset_path: ${{steps.download.outputs.download-path}}/nuget-package/net6.0/Edsm.Sdk${{needs.construct-version.outputs.version}}.nupkg
+          asset_name: Edsm.Sdk${{ needs.construct-version.outputs.version }}.nupkg
           asset_content_type: application/zip
+
+  push-to-nuget:
+    runs-on: ubuntu-latest
+    needs: [construct-version, update-changelog, package-build, publish-release]
+    name: Push To Nuget
+    steps:
+      - name: Download All Artifacts
+        id: download
+
+      - name: Build And Pack
+        run: dotnet nuget push ${{steps.download.outputs.download-path}}/nuget-package/net6.0/Edsm.Sdk${{needs.construct-version.outputs.version}}.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
